@@ -10,9 +10,7 @@ import Client, {
     SubscribeRequestFilterTransactions,
   } from "@triton-one/yellowstone-grpc";
   import { SubscribeRequestPing } from "@triton-one/yellowstone-grpc/dist/grpc/geyser";
-  //import { VersionedTransactionResponse } from "@solana/web3.js";
-import { tOutPut } from "./utils/transactionOutput";
-//import { sqrtPriceX64ToPrice } from "@orca-so/whirlpool-sdk";
+  import { tOutPut } from "./utils/transactionOutput";
  
   interface SubscribeRequest {
     accounts: { [key: string]: SubscribeRequestFilterAccounts };
@@ -30,7 +28,7 @@ import { tOutPut } from "./utils/transactionOutput";
    const METEORA = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 
     async function handleStream(client: Client, args: SubscribeRequest) {
-    // Subscribe for events
+    console.log("Starting Stream..");
     const stream = await client.subscribe();
   
     // Create `error` / `end` handler
