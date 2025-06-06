@@ -43,7 +43,8 @@ use::solana_sdk::transaction::Result as TransactionResult;
 
 type TxnFilterMap = HashMap<String, SubscribeRequestFilterTransactions>;
 
-const PUMP_PROGRAM_ID: &str = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM";
+const MINT_AUTHORITY_ID: &str = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM";
+const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 
@@ -78,9 +79,9 @@ impl Args {
             SubscribeRequestFilterTransactions {
                 vote: Some(false),
                 failed: Some(false),
-                account_include: vec![PUMP_PROGRAM_ID.to_string()],
+                account_include: vec![MINT_AUTHORITY_ID.to_string()],
                 account_exclude: vec![],
-                account_required: vec![],
+                account_required: vec![PUMP_PROGRAM_ID.to_string()],
                 signature: None,
             },
         );
