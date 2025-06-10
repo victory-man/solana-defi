@@ -5021,6 +5021,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-protos"
+version = "0.1.0"
+source = "git+https://github.com/temporalxyz/tempo-grpc.git?branch=main#45927fde1e5d8cc11c370a2a3453b0a11337bc70"
+dependencies = [
+ "prost 0.13.5",
+ "tonic 0.12.3",
+ "tonic-build 0.12.3",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5917,6 +5927,7 @@ dependencies = [
  "solana-entry",
  "solana-sdk",
  "solana-transaction-status",
+ "tempo-protos",
  "tokio",
  "tonic 0.10.2",
  "yellowstone-grpc-client",

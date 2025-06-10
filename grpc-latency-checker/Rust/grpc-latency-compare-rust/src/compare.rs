@@ -1,3 +1,5 @@
+use tempo_protos::transaction_stream_client::TransactionStreamClient;
+use tempo_protos::StartStream;
 use {
     chrono::Utc,
     dotenv::dotenv,
@@ -30,6 +32,7 @@ use {
 struct StreamConfig {
     uri: String,
     x_token: Option<String>,
+    tempo: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,9 +210,16 @@ async fn main() {
                     "starting yellowstone grpc stream{}",
                     yellowstone_stream_config.uri
                 );
-                tokio::spawn(async move {
-                    grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
-                });
+                let tempo = yellowstone_stream_config.tempo.unwrap_or(false);
+                if tempo {
+                    tokio::spawn(async move {
+                        temp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                    });
+                } else {
+                    tokio::spawn(async move {
+                        grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                    });
+                }
             }
         }
         None => {}
@@ -240,6 +250,43 @@ async fn main() {
             }
             latency_checker.get_report();
         }
+    }
+}
+
+async fn temp_grpc_message_handler(
+    timeout: oneshot::Receiver<bool>,
+    endpoint: String,
+    token: Option<String>,
+    m_tx: mpsc::Sender<LatencyCheckerInput>,
+) {
+    let mut client = TransactionStreamClient::connect(endpoint.clone())
+        .await
+        .unwrap();
+    let endpoint = Arc::new(endpoint);
+    // Send request to start stream
+    let auth_token = token.unwrap();
+    let start_stream_request = StartStream { auth_token };
+    let mut stream = client
+        .open_transaction_stream(start_stream_request)
+        .await
+        .unwrap();
+    tokio::select! {
+        _ = timeout => {
+            println!("Timeout reached, ending stream...");
+        }
+        _ = async {
+            while let Ok(Some(tx)) = stream.get_mut().message().await {
+                let current_time_millis = Utc::now().timestamp_millis() as u64;
+                // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
+                let sig = format!("{}_{}", tx.slot, tx.index);
+                _ = m_tx.send(LatencyCheckerInput{
+                    signature: sig,
+                    timestamp: current_time_millis,
+                    node: endpoint.clone(),
+                    m_type: 0,
+                }).await;
+            }
+        } => {},
     }
 }
 
@@ -296,11 +343,12 @@ async fn grpc_message_handler(
                 match message {
                     Ok(msg) => match msg.update_oneof {
                         Some(UpdateOneof::TransactionStatus(tx)) => {
-                            let sig = Signature::try_from(tx.signature.as_slice())
-                                .expect("valid signature from transaction")
-                                .to_string();
+                            // let sig = Signature::try_from(tx.signature.as_slice())
+                            //     .expect("valid signature from transaction")
+                            //     .to_string();
                             let current_time_millis = Utc::now().timestamp_millis() as u64;
                             // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
+                            let sig = format!("{}_{}", tx.slot, tx.index);
                             _ = m_tx.send(LatencyCheckerInput{
                                 signature: sig,
                                 timestamp: current_time_millis,
@@ -308,16 +356,16 @@ async fn grpc_message_handler(
                                 m_type: 0,
                             }).await;
                         }
-                        Some(UpdateOneof::BlockMeta(block)) => {
-                            let current_time_millis = Utc::now().timestamp_millis() as u64;
-                            info!("received block {} at {}", block.blockhash, current_time_millis);
-                            _ = m_tx.send(LatencyCheckerInput {
-                                signature: block.blockhash,
-                                timestamp:current_time_millis,
-                                node: endpoint.clone(),
-                                m_type: 1,
-                            }).await;
-                        }
+                        // Some(UpdateOneof::BlockMeta(block)) => {
+                        //     let current_time_millis = Utc::now().timestamp_millis() as u64;
+                        //     info!("received block {} at {}", block.blockhash, current_time_millis);
+                        //     _ = m_tx.send(LatencyCheckerInput {
+                        //         signature: block.blockhash,
+                        //         timestamp:current_time_millis,
+                        //         node: endpoint.clone(),
+                        //         m_type: 1,
+                        //     }).await;
+                        // }
                         _ => {}
                     },
                     Err(error) => {

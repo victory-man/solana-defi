@@ -46,3 +46,4 @@ yellowstone-grpc-proto = { version = "4.1.1", default-features = false, features
 jito-protos = { path = "./jito_protos" }
 solana-entry = "~2.1.1"
 dotenv = "0.15.0"
+tempo-protos = {git = "https://github.com/temporalxyz/tempo-grpc.git", branch = "main", subdirectory = "rust"}
