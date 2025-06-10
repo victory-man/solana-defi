@@ -1,13 +1,11 @@
+use crate::tempo::transaction_stream_client::TransactionStreamClient;
+use crate::tempo::StartStreamV2;
 use solana_sdk::pubkey;
-use tempo_protos::transaction_stream_client::TransactionStreamClient;
-use tempo_protos::{StartStream, StartStreamV2};
+use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use {
     chrono::Utc,
     dotenv::dotenv,
     futures::{sink::SinkExt, stream::StreamExt},
-    jito_protos::shredstream::{
-        shredstream_proxy_client::ShredstreamProxyClient, SubscribeEntriesRequest,
-    },
     log::{error, info},
     maplit::hashmap,
     serde::Deserialize,
@@ -29,11 +27,18 @@ use {
     },
 };
 
+mod tempo {
+    tonic::include_proto!("tempo");
+}
+mod bloxroute {
+    tonic::include_proto!("bloxroute");
+}
+
 #[derive(Debug, Deserialize, Clone)]
 struct StreamConfig {
     uri: String,
     x_token: Option<String>,
-    tempo: Option<bool>,
+    kind: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,8 +216,18 @@ async fn main() {
                     "starting yellowstone grpc stream{}",
                     yellowstone_stream_config.uri
                 );
-                let tempo = yellowstone_stream_config.tempo.unwrap_or(false);
-                if tempo {
+                let kind = yellowstone_stream_config.kind.unwrap_or(0);
+                if kind == 2 {
+                    tokio::spawn(async move {
+                        bloxroute_grpc_message_handler(
+                            rx,
+                            yellowstone_stream_config.uri,
+                            token,
+                            m_tx,
+                        )
+                        .await;
+                    });
+                } else if kind == 1 {
                     tokio::spawn(async move {
                         temp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx)
                             .await;
@@ -227,23 +242,6 @@ async fn main() {
         None => {}
     }
 
-    match args.shred_stream_configs {
-        Some(shred_stream_configs) => {
-            for shred_stream_config in shred_stream_configs {
-                let token = shred_stream_config.x_token.clone();
-                let (tx, rx) = oneshot::channel();
-                shutdown_sig.push(tx);
-                let m_tx = m_tx.clone();
-
-                info!("starting shredstream {}", shred_stream_config.uri);
-                tokio::spawn(async move {
-                    shred_message_handler(rx, shred_stream_config.uri, token, m_tx).await;
-                });
-            }
-        }
-        None => {}
-    }
-
     tokio::select! {
         _ = latency_checker.listen_messages(m_rx) => {}
         _ = timeout => {
@@ -252,6 +250,49 @@ async fn main() {
             }
             latency_checker.get_report();
         }
+    }
+}
+
+async fn bloxroute_grpc_message_handler(
+    timeout: oneshot::Receiver<bool>,
+    endpoint: String,
+    token: Option<String>,
+    m_tx: mpsc::Sender<LatencyCheckerInput>,
+) {
+    let mut client =
+        bloxroute::tx_streamer_service_client::TxStreamerServiceClient::connect(endpoint.clone())
+            .await
+            .unwrap();
+    let endpoint = Arc::new(endpoint);
+    // Send request to start stream
+    let auth_token = token.unwrap();
+    let start_stream_request = bloxroute::StreamTransactionsRequest {
+        accounts: vec!["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()],
+    };
+    let mut start_stream_request = Request::new(start_stream_request);
+    start_stream_request.metadata_mut().insert("authorization", auth_token.parse().unwrap());
+    let mut stream = client
+        .stream_transactions(start_stream_request)
+        .await
+        .unwrap();
+    tokio::select! {
+        _ = timeout => {
+            println!("Timeout reached, ending stream...");
+        }
+        _ = async {
+            while let Ok(Some(tx)) = stream.get_mut().message().await {
+                let current_time_millis = Utc::now().timestamp_millis() as u64;
+                // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
+                let tx = bincode::deserialize::<VersionedTransaction>(tx.data.as_ref()).unwrap();
+                let sig = tx.signatures.get(0).unwrap().to_string();
+                _ = m_tx.send(LatencyCheckerInput{
+                    signature: sig,
+                    timestamp: current_time_millis,
+                    node: endpoint.clone(),
+                    m_type: 0,
+                }).await;
+            }
+        } => {},
     }
 }
 
@@ -284,7 +325,9 @@ async fn temp_grpc_message_handler(
             while let Ok(Some(tx)) = stream.get_mut().message().await {
                 let current_time_millis = Utc::now().timestamp_millis() as u64;
                 // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
-                let sig = format!("{}_{}", tx.slot, tx.index);
+                // let sig = format!("{}_{}", tx.slot, tx.index);
+                let tx = bincode::deserialize::<VersionedTransaction>(tx.payload.as_ref()).unwrap();
+                let sig = tx.signatures.get(0).unwrap().to_string();
                 _ = m_tx.send(LatencyCheckerInput{
                     signature: sig,
                     timestamp: current_time_millis,
@@ -360,12 +403,12 @@ async fn grpc_message_handler(
                 match message {
                     Ok(msg) => match msg.update_oneof {
                         Some(UpdateOneof::TransactionStatus(tx)) => {
-                            // let sig = Signature::try_from(tx.signature.as_slice())
-                            //     .expect("valid signature from transaction")
-                            //     .to_string();
+                            let sig = Signature::try_from(tx.signature.as_slice())
+                                .expect("valid signature from transaction")
+                                .to_string();
                             let current_time_millis = Utc::now().timestamp_millis() as u64;
                             // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
-                            let sig = format!("{}_{}", tx.slot, tx.index);
+                            // let sig = format!("{}_{}", tx.slot, tx.index);
                             _ = m_tx.send(LatencyCheckerInput{
                                 signature: sig,
                                 timestamp: current_time_millis,
@@ -391,85 +434,6 @@ async fn grpc_message_handler(
                     }
                 }
             }
-        } => {}
-    }
-}
-
-async fn shred_message_handler(
-    timeout: oneshot::Receiver<bool>,
-    endpoint: String,
-    token: Option<String>,
-    m_tx: mpsc::Sender<LatencyCheckerInput>,
-) {
-    let connection = Endpoint::from_shared(endpoint.clone())
-        .unwrap()
-        .keep_alive_while_idle(true)
-        .http2_keep_alive_interval(Duration::from_secs(5))
-        .keep_alive_timeout(Duration::from_secs(10))
-        .tcp_keepalive(Some(Duration::from_secs(15)))
-        .connect_timeout(Duration::from_secs(5));
-
-    let endpoint = Arc::new(endpoint);
-
-    let channel = connection.connect().await.unwrap();
-    let mut client = ShredstreamProxyClient::new(channel);
-
-    let mut request = Request::new(SubscribeEntriesRequest {});
-    if let Some(token) = token {
-        let metadata_value = MetadataValue::from_str(&token).unwrap();
-        request.metadata_mut().insert("x-token", metadata_value);
-    }
-
-    let mut stream = client
-        .subscribe_entries(request)
-        .await
-        .unwrap()
-        .into_inner();
-    tokio::select! {
-        _ = timeout => {
-            println!("Timeout reached, ending stream...");
-        }
-        _ = async {
-            while let Some(message) = stream.next().await {
-                match message {
-                    Ok(msg) => {
-                    let entries = match bincode::deserialize::<Vec<Entry>>(&msg.entries) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!("Deserialization failed: {e}");
-                        continue;
-                    }
-                };
-
-                // println!(
-                //     "slot {}, entries: {}, transactions: {}",
-                //     msg.slot,
-                //     entries.len(),
-                //     entries.iter().map(|e| e.transactions.len()).sum::<usize>()
-                // );
-
-                for entry in entries {
-                         let current_time_millis = Utc::now().timestamp_millis() as u64;
-                         for txn in entry.transactions {
-                            let sig = txn.signatures[0].to_string();
-                            // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
-                            _ = m_tx.send(LatencyCheckerInput {
-                                signature: sig,
-                                timestamp: current_time_millis,
-                                node: endpoint.clone(),
-                                m_type: 0,
-                            }).await;
-                         }
-                }
-
-                    }
-                     Err(e) => {
-                eprintln!("stream error: {e}");
-                return Err(Box::new(e));
-            }
-                }
-            }
-            Ok(())
         } => {}
     }
 }

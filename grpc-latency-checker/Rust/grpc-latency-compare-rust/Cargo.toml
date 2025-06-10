@@ -11,7 +11,7 @@ homepage = "https://impin2rex.github.io"
 version = "0.1.0"
 
 [workspace.dependencies]
-tonic = { version = "0.10" }
+tonic = { version = "0.12.3" }
 
 [package]
 name = "yellowstone-grpc-n-shred-latency-comparer"
@@ -43,7 +43,13 @@ tokio = { version = "1.21.2", features = ["full"] }
 tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
 yellowstone-grpc-client = { version = "4.1.0" }
 yellowstone-grpc-proto = { version = "4.1.1", default-features = false, features = ["plugin"] }
-jito-protos = { path = "./jito_protos" }
+#jito-protos = { path = "./jito_protos" }
 solana-entry = "~2.1.1"
 dotenv = "0.15.0"
-tempo-protos = {git = "https://github.com/temporalxyz/tempo-grpc.git", branch = "main", subdirectory = "rust"}
+prost = "0.13.4"
+#tempo-protos = {git = "https://github.com/temporalxyz/tempo-grpc.git", branch = "main", subdirectory = "rust"}
+
+
+
+[build-dependencies]
+tonic-build = "0.12.3"
