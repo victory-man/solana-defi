@@ -1,5 +1,6 @@
+use solana_sdk::pubkey;
 use tempo_protos::transaction_stream_client::TransactionStreamClient;
-use tempo_protos::StartStream;
+use tempo_protos::{StartStream, StartStreamV2};
 use {
     chrono::Utc,
     dotenv::dotenv,
@@ -213,7 +214,8 @@ async fn main() {
                 let tempo = yellowstone_stream_config.tempo.unwrap_or(false);
                 if tempo {
                     tokio::spawn(async move {
-                        temp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                        temp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx)
+                            .await;
                     });
                 } else {
                     tokio::spawn(async move {
@@ -265,9 +267,13 @@ async fn temp_grpc_message_handler(
     let endpoint = Arc::new(endpoint);
     // Send request to start stream
     let auth_token = token.unwrap();
-    let start_stream_request = StartStream { auth_token };
+    let pump = pubkey!("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+    let start_stream_request = StartStreamV2 {
+        auth_token,
+        static_account_filter: vec![pump.to_bytes().to_vec()],
+    };
     let mut stream = client
-        .open_transaction_stream(start_stream_request)
+        .open_transaction_stream_v2(start_stream_request)
         .await
         .unwrap();
     tokio::select! {
@@ -311,11 +317,22 @@ async fn grpc_message_handler(
     let endpoint = Arc::new(endpoint);
 
     let commitment: CommitmentLevel = CommitmentLevel::default();
+    let mut transactions = HashMap::new();
+    transactions.insert(
+        "program".to_string(),
+        SubscribeRequestFilterTransactions {
+            vote: Some(false),
+            failed: Some(false),
+            account_include: vec!["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()],
+            account_required: vec!["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()],
+            ..SubscribeRequestFilterTransactions::default()
+        },
+    );
     subscribe_tx
         .send(SubscribeRequest {
             slots: HashMap::new(),
             accounts: HashMap::new(),
-            transactions: HashMap::new(),
+            transactions,
             transactions_status: hashmap! { "".to_owned() => SubscribeRequestFilterTransactions {
                 vote: Some(false),
                 failed: Some(false),
