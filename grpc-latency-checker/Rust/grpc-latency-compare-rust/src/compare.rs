@@ -1,7 +1,14 @@
+use hyper_util::rt::TokioIo;
 use crate::tempo::transaction_stream_client::TransactionStreamClient;
 use crate::tempo::StartStreamV2;
 use solana_sdk::pubkey;
 use solana_sdk::transaction::{Transaction, VersionedTransaction};
+use tokio::net::UnixStream;
+use tonic::transport::Uri;
+use tonic_health::pb::health_client::HealthClient;
+use tower::service_fn;
+use yellowstone_grpc_client::InterceptorXToken;
+use yellowstone_grpc_proto::geyser::geyser_client::GeyserClient;
 use {
     chrono::Utc,
     dotenv::dotenv,
@@ -345,17 +352,42 @@ async fn grpc_message_handler(
     token: Option<String>,
     m_tx: mpsc::Sender<LatencyCheckerInput>,
 ) {
-    let mut client = GeyserGrpcClient::build_from_shared(endpoint.clone())
+    let mut builder = GeyserGrpcClient::build_from_shared(endpoint.clone())
         .unwrap()
-        .x_token(token)
+        .x_token(token.clone())
         .unwrap()
         .tls_config(ClientTlsConfig::new().with_native_roots())
         .unwrap()
         .send_compressed(yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Gzip)
-        .accept_compressed(yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Gzip)
-        .connect()
-        .await
-        .unwrap();
+        .accept_compressed(yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Gzip);
+    let channel = builder.endpoint.connect_with_connector(service_fn(|_: Uri| async {
+        Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect("/var/run/sol.sock").await?))
+    })).await.unwrap();
+
+    let interceptor = InterceptorXToken {
+        x_token: builder.x_token,
+        x_request_snapshot: builder.x_request_snapshot,
+    };
+
+    let mut geyser = GeyserClient::with_interceptor(channel.clone(), interceptor.clone());
+    if let Some(encoding) = builder.send_compressed {
+        geyser = geyser.send_compressed(encoding);
+    }
+    if let Some(encoding) = builder.accept_compressed {
+        geyser = geyser.accept_compressed(encoding);
+    }
+    if let Some(limit) = builder.max_decoding_message_size {
+        geyser = geyser.max_decoding_message_size(limit);
+    }
+    if let Some(limit) = builder.max_encoding_message_size {
+        geyser = geyser.max_encoding_message_size(limit);
+    }
+
+    let mut client = GeyserGrpcClient::new(
+        HealthClient::with_interceptor(channel, interceptor),
+        geyser,
+    );
+
     let (mut subscribe_tx, mut stream) = client.subscribe().await.unwrap();
     let endpoint = Arc::new(endpoint);
 
