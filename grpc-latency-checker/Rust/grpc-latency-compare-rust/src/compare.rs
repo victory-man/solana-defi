@@ -224,7 +224,9 @@ async fn main() {
                     yellowstone_stream_config.uri
                 );
                 let kind = yellowstone_stream_config.kind.unwrap_or(0);
-                if kind == 2 {
+                if kind == 3 {
+                    tcp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                } else if kind == 2 {
                     tokio::spawn(async move {
                         bloxroute_grpc_message_handler(
                             rx,
@@ -458,6 +460,93 @@ async fn grpc_message_handler(
                         //         m_type: 1,
                         //     }).await;
                         // }
+                        _ => {}
+                    },
+                    Err(error) => {
+                        error!("stream error: {error:?}");
+                        break;
+                    }
+                }
+            }
+        } => {}
+    }
+}
+
+async fn tcp_grpc_message_handler(
+    timeout: oneshot::Receiver<bool>,
+    endpoint: String,
+    token: Option<String>,
+    m_tx: mpsc::Sender<LatencyCheckerInput>,
+) {
+    let mut client = GeyserGrpcClient::build_from_shared(endpoint.clone())
+        .unwrap()
+        .x_token(token)
+        .unwrap()
+        .tls_config(ClientTlsConfig::new().with_native_roots())
+        .unwrap()
+        .send_compressed(yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Gzip)
+        .accept_compressed(yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Gzip)
+        .connect()
+        .await
+        .unwrap();
+    let (mut subscribe_tx, mut stream) = client.subscribe().await.unwrap();
+    let endpoint = Arc::new(endpoint);
+
+    let commitment: CommitmentLevel = CommitmentLevel::default();
+    subscribe_tx
+        .send(SubscribeRequest {
+            slots: HashMap::new(),
+            accounts: HashMap::new(),
+            transactions: HashMap::new(),
+            transactions_status: hashmap! { "".to_owned() => SubscribeRequestFilterTransactions {
+                vote: Some(false),
+                failed: Some(false),
+                signature: None,
+                account_include: Vec::new(),
+                account_exclude: Vec::new(),
+                account_required: Vec::new(),
+            } },
+            entry: HashMap::new(),
+            blocks: HashMap::new(),
+            blocks_meta: hashmap! { "".to_owned() => SubscribeRequestFilterBlocksMeta {} },
+            commitment: Some(commitment as i32),
+            accounts_data_slice: vec![],
+            ping: None,
+            from_slot: None,
+        })
+        .await
+        .unwrap();
+    tokio::select! {
+        _ = timeout => {
+            println!("Timeout reached, ending stream...");
+        }
+        _ = async {
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(msg) => match msg.update_oneof {
+                        Some(UpdateOneof::TransactionStatus(tx)) => {
+                            let sig = Signature::try_from(tx.signature.as_slice())
+                                .expect("valid signature from transaction")
+                                .to_string();
+                            let current_time_millis = Utc::now().timestamp_millis() as u64;
+                            // info!("received txn {} at {} from node {}", sig, current_time_millis, endpoint);
+                            _ = m_tx.send(LatencyCheckerInput{
+                                signature: sig,
+                                timestamp: current_time_millis,
+                                node: endpoint.clone(),
+                                m_type: 0,
+                            }).await;
+                        }
+                        Some(UpdateOneof::BlockMeta(block)) => {
+                            let current_time_millis = Utc::now().timestamp_millis() as u64;
+                            info!("received block {} at {}", block.blockhash, current_time_millis);
+                            _ = m_tx.send(LatencyCheckerInput {
+                                signature: block.blockhash,
+                                timestamp:current_time_millis,
+                                node: endpoint.clone(),
+                                m_type: 1,
+                            }).await;
+                        }
                         _ => {}
                     },
                     Err(error) => {
