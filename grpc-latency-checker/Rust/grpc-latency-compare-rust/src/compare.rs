@@ -225,7 +225,9 @@ async fn main() {
                 );
                 let kind = yellowstone_stream_config.kind.unwrap_or(0);
                 if kind == 3 {
-                    tcp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                    tokio::spawn(async move {
+                        tcp_grpc_message_handler(rx, yellowstone_stream_config.uri, token, m_tx).await;
+                    });
                 } else if kind == 2 {
                     tokio::spawn(async move {
                         bloxroute_grpc_message_handler(
